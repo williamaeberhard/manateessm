@@ -12,16 +12,11 @@
 library(TMB)
 library(splines) # for B-splines bs()
 
-# TODO: adapt and simplify scripts for illustration with simulated data
-
 
 ### // compile and load model C++ script ----
 
-# TODO
-
-# # system.time(compile("PoiGauAR1SSM_alt.cpp")) # run only once
-# dyn.load(dynlib("PoiGauAR1SSM_alt")) # run for every new session
-# # ^ v0.3-1 forked from v0.3: piecewise linear temp fx separate from Zmat
+compile("PoiGauAR1SSM.cpp") # run only once
+dyn.load(dynlib("PoiGauAR1SSM")) # run for every new session
 
 
 ### // load data from supplied txt file ----
@@ -81,7 +76,150 @@ tail(Z.tem)
 # ^ all intercept and slopes, constraints on coefficients hard-coded in cpp
 
 
-### // setup objectsn for fit ----
+### // setup objects for fit ----
+add.zerosurv <- 1e-5 # small arbitrary number to avoid log(0)
 
-# here!!!
+Z.cov <- cbind(
+	rep(1,nT),               # intercept
+	cov.timetrend,           # linear time trend
+	dat$surveyor_experience, # surveyor experience dummy
+	cov.seas                 # seasonality dummy, 2 season, winter in intercept
+)
 
+parlist <- list(
+	'beta'=rep(0,dim(Z.cov)[2]), # covariates in lin comb detfx
+	'betatemp'=c(0,0),           # tem piecewise lin fx, only 2 free param
+	'tphi'=0,                    # AR(1) coef
+	'logsigma'=0,                # AR(1) Gaussian noise sd
+	'X'=rep(0,nT)                # AR(1) process itself
+)
+# ^ list with all param initial values, incl random effect X
+
+datalist <- list(
+	'obs'=dat$manatee_counts,
+	'obsind'=as.integer(!is.na(dat$manatee_counts)), # 0/1 if obs available
+	'logoffset'=log(dat$number_surveys + add.zerosurv),
+	'Zmat'=Z.cov, # covariates in lin comb detfx
+	'Zmattemp'=Z.tem, # temp piecewise lin fx, all 4 col
+	'tempthresh'=thresh.tem # temperature threshold junction 2 linear pieces
+)
+# ^ list with all data and fixed inputs
+
+
+
+### // fit ----
+
+obj <- MakeADFun(
+	data=datalist,
+	parameters=parlist,
+	random=c('X'),
+	DLL="PoiGauAR1SSM",
+	silent=T
+)
+
+# obj$fn() # objective function = marginal negative log-likelihood
+# obj$gr() # gradient wrt param beta, betatemp, tphi, and logsigma
+
+opt <- nlminb(start=obj$par, obj=obj$fn, gr=obj$gr,
+							control=list(eval.max=5000,iter.max=5000))
+opt$message # ok
+
+
+
+### // param estimates ----
+
+rep <- obj$rep() # report
+unlist(rep[c('phi','sigma','inisd')])
+# ^ AR(1) estimated param. phi rather close to 0
+
+sdrep <- summary(sdreport(obj)) # report with standard errors
+summary.beta <- sdrep[dimnames(sdrep)[[1]]=='beta',][1:dim(Z.cov)[2],]
+dimnames(summary.beta)[[1]] <- c(
+	'Intercept',
+	'Linear time trend',
+	'Surveyor experience',
+	'Seasonality'
+)
+
+summary.betatemp <-  sdrep[dimnames(sdrep)[[1]]=='betatemp',][1:2,]
+dimnames(summary.betatemp)[[1]] <- c(
+	'Temperature slope <= threshold',
+	'Temperature slope > threshold'
+)
+
+summary.beta
+# ^ estimates and std err for effects in Z.cov
+
+summary.betatemp
+# ^ estimates and std err for piecewise linear effect of temperature
+
+
+### // visualize fit and temperature effect ----
+yearticks <- as.Date(paste0(unique(substr(dat$ts,1,4)),'-01-01'))
+# ^ year tickmarks/vertical lines on plots
+
+### observation time series and fitted values 
+plot(dat$ts,dat$manatee_counts/(dat$number_surveys+add.zerosurv),
+		 pch=19,cex=0.6,
+		 main='Standardized observations and fitted values',
+		 ylab='Counts standardized by number of surveys',xlab='')
+abline(v=yearticks,lty=3)
+lines(dat$ts,rep$fitted/(dat$number_surveys+add.zerosurv),col='red')
+legend('topleft',legend=c('Observations','Fitted values'),
+			 col=c(1,'red'),pch=c(19,NA),lty=c(NA,1),pt.cex=c(0.6,NA))
+
+
+### decomposition of fitted values
+plot(dat$ts,log(rep$fitted/(dat$number_surveys+add.zerosurv)),col='red',type='l')
+lines(dat$ts,rep$zb,col='blue',lty=2)
+lines(dat$ts,rep$X,col='limegreen',lty=2)
+# ^ red curve (fitted values) = blue (fixed effects) + green (random effect)
+# ^ relative contribution: here fixed effects make up the most part
+
+
+### piecewise linear effect of temperature
+gridtem <- seq(min(dat$temperature), max(dat$temperature), length.out=300)
+gridtem.01 <- as.numeric(gridtem > thresh.tem)
+Z.gridtem <- cbind(
+	1-gridtem.01,                   # intercept tem <= threshold
+	gridtem*(1-gridtem.01), # slope tem <= threshold
+	gridtem.01,                     # intercept tem > threshold
+	gridtem*gridtem.01      # slope tem > threshold
+)
+linpred.tem <- as.numeric(Z.gridtem%*%rep$betatempvec)
+# ^ piecewise linear effect of temperature (marginal)
+
+linpred <- vector('list',4)
+linpred[[1]] <- as.numeric(c(1,mean(Z.cov[,2]),0,0)%*%rep$beta) + linpred.tem
+linpred[[2]] <- as.numeric(c(1,mean(Z.cov[,2]),1,0)%*%rep$beta) + linpred.tem
+linpred[[3]] <- as.numeric(c(1,mean(Z.cov[,2]),0,1)%*%rep$beta) + linpred.tem
+linpred[[4]] <- as.numeric(c(1,mean(Z.cov[,2]),1,1)%*%rep$beta) + linpred.tem
+# ^ 00 = less experienced, winter
+# ^ 10 = experienced, winter
+# ^ 01 = less experienced, other seasons
+# ^ 11 = experienced, other seasons
+
+colvec.month <- c('red','blue')[cov.seas+1]
+# ^ symbol coloring by season: red=winter, blue=others
+colvec.curves <- rep(c('red','blue'),each=2)
+ltyvec.curves <- rep(2:1,2)
+
+plot(dat$temperature, dat$manatee_counts/(dat$number_surveys+add.zerosurv),
+		 main='Estimated temperature effect, by season and surveyor experience',
+		 xlab='Monthly max temperature in °C',
+		 ylab='Counts standardized by number of surveys',
+		 col=colvec.month, # coloring by seasons
+		 pch=ifelse(as.logical(dat$surveyor_experience),24,25)
+)
+for (j in 1:4){
+	lines(gridtem, exp(linpred[[j]]),col=colvec.curves[j],lty=ltyvec.curves[j])
+}
+legend('topleft',c('winter, less experienced','winter, experienced',
+									 'spring+fall+summer, less experienced',
+									 'spring+fall+summer, experienced'),
+			 col=colvec.curves,pch=rep(c(25,24),2),lty=ltyvec.curves
+)
+
+
+
+# end manateessm_main.r

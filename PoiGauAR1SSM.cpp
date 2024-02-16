@@ -14,7 +14,6 @@ Type sqr(Type x){
 // parameter transformation, R -> (-1,+1)
 template <class Type>
 Type bound11(Type x){
-	// return (Type(1.0)-exp(-x))/(Type(1.0)+exp(-x));
 	return Type(2.0)/(Type(1.0)+exp(-x)) - Type(1.0);
 }
 
@@ -43,7 +42,7 @@ Type objective_function<Type>::operator() () {
 	PARAMETER_VECTOR(X); // unobserved states AR(1), dim n
 
 	// Misc
-	DATA_SCALAR(tempthresh); // temp value piecewise lin fx junction
+	DATA_SCALAR(tempthresh); // temperature threshold piecewise lin fx junction
 
 
 	//--------------------------------------------------------------------------
@@ -58,20 +57,15 @@ Type objective_function<Type>::operator() () {
 	vector<Type> betatempvec(4); // vector of all pw lin fx coeff, incl constr
 	betatempvec(0) = Type(0.0);
 	// ^ intercept temp <= thresh, constrained to overall intercept
-	betatempvec(1) = betatemp(0); // slope temp <= thresh
+	betatempvec(1) = betatemp(0); // slope temp <= thresh, free param
 	betatempvec(2) = tempthresh*(betatemp(0)-betatemp(1));
 	// ^ intercept temp > thresh, constrained for continuity at thresh
-	betatempvec(3) = betatemp(1); // slope temp > thresh
+	betatempvec(3) = betatemp(1); // slope temp > thresh, free param
 
 	vector<Type> zb = Zmat*beta + Zmattemp*betatempvec;
 	// ^ all deterministic effects as two linear combinations, dim n
 
 	Type nll = 0.0; // init neg loglik
-
-
-// here!!! finish double-check below
-
-
 
 	//--------------------------------------------------------------------------
 	// Random effects
