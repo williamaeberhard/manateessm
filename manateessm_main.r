@@ -9,8 +9,7 @@
 
 ### // load libraries ----
 
-library(TMB)
-library(splines) # for B-splines bs()
+library(TMB) # Template Model Builder, required to compile the C++ script
 
 
 ### // compile and load model C++ script ----
